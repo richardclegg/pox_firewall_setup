@@ -84,12 +84,44 @@ class Entry (object):
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
 
+class firewallRules():
+    """Class for rules for the firewall"""
+    
+    def __init__ (self):
+        """Initialise rules"""
+        #dpid of firewall
+        self.fwdpid= 4
+        #pairs of dpid and port no heading to firewall
+        self.fwroutes= [(2,3)]
+        
+        
+    def isFirewall(self, dpid):
+        """Is this switch the firewall"""
+        if dpid == self.fwdpid:
+            return True
+        return False
+        
+    def routeToFirewall(self,dpid,portIn):
+        """Route this packet to the firewall
+        returns -1 for no or a port number for yes"""
+        
+        return -1
+        
+    def acceptPacket(self,packet):
+        """Should a packet be accepted or dropped"""
+        
+        return True
+        
 
 class l3_switch (EventMixin):
   def __init__ (self, fakeways = [], arp_for_unknowns = False):
     # These are "fake gateways" -- we'll answer ARPs for them with MAC
     # of the switch they're connected to.
     self.fakeways = set(fakeways)
+    
+    
+    #Initialise firewall part
+    self.fw= firewallRules()
 
     # If this is true and we see a packet for an unknown
     # host, we'll ARP for it.
@@ -150,12 +182,15 @@ class l3_switch (EventMixin):
 
   def _handle_GoingUpEvent (self, event):
     self.listenTo(core.openflow)
+    
     log.debug("Up...")
 
   def _handle_PacketIn (self, event):
+    
     dpid = event.connection.dpid
     inport = event.port
     packet = event.parsed
+    print "PacketIn dpid",dpid
     if not packet.parsed:
       log.warning("%i %i ignoring unparsed packet", dpid, inport)
       return
@@ -170,6 +205,9 @@ class l3_switch (EventMixin):
     if packet.type == ethernet.LLDP_TYPE:
       # Ignore LLDP packets
       return
+
+    if self.fw.isFirewall(dpid):
+        print "I'm the firewall yay",dpid
 
     if isinstance(packet.next, ipv4):
       log.debug("%i %i IP %s => %s", dpid,inport,
