@@ -32,6 +32,8 @@ log = core.getLogger()
 from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST
 from pox.lib.packet.ipv4 import ipv4
 from pox.lib.packet.arp import arp
+from pox.lib.packet.tcp import tcp
+from pox.lib.packet.udp import udp
 from pox.lib.addresses import IPAddr, EthAddr
 from pox.lib.util import str_to_bool, dpid_to_str
 from pox.lib.recoco import Timer
@@ -92,7 +94,7 @@ class firewallRules():
         #dpid of firewall
         self.fwdpid= 4
         #pairs of dpid and port no heading to firewall
-        self.fwroutes= [(2,3)]
+        self.fwroutes= [(2,4)]
         
         
     def isFirewall(self, dpid):
@@ -104,12 +106,16 @@ class firewallRules():
     def routeToFirewall(self,dpid,portIn):
         """Route this packet to the firewall
         returns -1 for no or a port number for yes"""
-        
+        for (d,p) in self.fwroutes:
+          if dpid == d and portIn != p:
+            return p
         return -1
         
-    def acceptPacket(self,packet):
+    def acceptPacket(self,ippacket, inport):
         """Should a packet be accepted or dropped"""
-        
+        if isinstance(ippacket.next, udp) or isinstance(ippacket.next,tcp):
+          if ippacket.next.dstport == 80:
+            return False
         return True
         
 
@@ -190,7 +196,6 @@ class l3_switch (EventMixin):
     dpid = event.connection.dpid
     inport = event.port
     packet = event.parsed
-    print "PacketIn dpid",dpid
     if not packet.parsed:
       log.warning("%i %i ignoring unparsed packet", dpid, inport)
       return
@@ -206,13 +211,40 @@ class l3_switch (EventMixin):
       # Ignore LLDP packets
       return
 
-    if self.fw.isFirewall(dpid):
-        print "I'm the firewall yay",dpid
+    
 
     if isinstance(packet.next, ipv4):
       log.debug("%i %i IP %s => %s", dpid,inport,
                 packet.next.srcip,packet.next.dstip)
-
+      print "Packet at ",dpid,"from port",inport,"src",packet.next.srcip,"dst",packet.next.dstip
+      if self.fw.isFirewall(dpid):
+        print "I'm the firewall yay",dpid
+        if not self.fw.acceptPacket(packet.next, inport):
+          print "I'm dropping the packet"
+          actions = []
+          match = of.ofp_match.from_packet(packet, inport)
+          msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
+            idle_timeout=FLOW_IDLE_TIMEOUT,
+            hard_timeout=of.OFP_FLOW_PERMANENT,
+            buffer_id=event.ofp.buffer_id,
+            actions=actions,
+            match=of.ofp_match.from_packet(packet,inport))
+          event.connection.send(msg.pack())
+          return
+    
+      fport= self.fw.routeToFirewall(dpid,inport)
+      if fport >= 0:
+        print "I'm forwarding to firewall on port", fport, "from", inport
+        newactions = []
+        newactions.append(of.ofp_action_output(port = fport))
+        newmsg = of.ofp_flow_mod(command=of.OFPFC_ADD,
+          idle_timeout=FLOW_IDLE_TIMEOUT,
+          hard_timeout=of.OFP_FLOW_PERMANENT,
+          buffer_id=event.ofp.buffer_id,
+          actions=newactions,
+          match=of.ofp_match.from_packet(packet,inport))
+        event.connection.send(newmsg.pack())
+        return       
       # Send any waiting packets...
       self._send_lost_buffers(dpid, packet.next.srcip, packet.src, inport)
 
@@ -231,27 +263,28 @@ class l3_switch (EventMixin):
 
         prt = self.arpTable[dpid][dstaddr].port
         mac = self.arpTable[dpid][dstaddr].mac
-        if prt == inport:
-          log.warning("%i %i not sending packet for %s back out of the " +
-                      "input port" % (dpid, inport, str(dstaddr)))
-        else:
-          log.debug("%i %i installing flow for %s => %s out port %i"
+        log.debug("%i %i installing flow for %s => %s out port %i"
                     % (dpid, inport, packet.next.srcip, dstaddr, prt))
 
-          actions = []
-          actions.append(of.ofp_action_dl_addr.set_dst(mac))
+        actions = []
+        actions.append(of.ofp_action_dl_addr.set_dst(mac))
+        
+        if prt == inport:
+          print "BACKING UP"
+          actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+        else:
           actions.append(of.ofp_action_output(port = prt))
-          match = of.ofp_match.from_packet(packet, inport)
-          match.dl_src = None # Wildcard source MAC
-
-          msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-                                idle_timeout=FLOW_IDLE_TIMEOUT,
-                                hard_timeout=of.OFP_FLOW_PERMANENT,
-                                buffer_id=event.ofp.buffer_id,
-                                actions=actions,
-                                match=of.ofp_match.from_packet(packet,
-                                                               inport))
-          event.connection.send(msg.pack())
+        print "Packet to port ",prt
+        match = of.ofp_match.from_packet(packet, inport)
+        match.dl_src = None # Wildcard source MAC
+        msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
+                              idle_timeout=FLOW_IDLE_TIMEOUT,
+                              hard_timeout=of.OFP_FLOW_PERMANENT,
+                              buffer_id=event.ofp.buffer_id,
+                              actions=actions,
+                              match=of.ofp_match.from_packet(packet,
+                                                             inport))
+        event.connection.send(msg.pack())
       elif self.arp_for_unknowns:
         # We don't know this destination.
         # First, we track this buffer so that we can try to resend it later
