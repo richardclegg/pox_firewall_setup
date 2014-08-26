@@ -92,7 +92,7 @@ class firewallRules():
     def __init__ (self):
         """Initialise rules"""
         #dpid of firewall
-        self.fwdpid= 4
+        self.fwdpid= 18
         #pairs of dpid and port no heading to firewall
         self.fwroutes= [(2,4)]
         
@@ -114,7 +114,9 @@ class firewallRules():
     def acceptPacket(self,ippacket, inport):
         """Should a packet be accepted or dropped"""
         if isinstance(ippacket.next, udp) or isinstance(ippacket.next,tcp):
-          if ippacket.next.dstport == 80:
+          if ippacket.next.dstport == 80 and ippacket.srcip=='10.43.21.4':
+            return False
+          if ippacket.next.dstport == 80 and ippacket.dstip=='10.43.21.4':
             return False
         return True
         
@@ -190,6 +192,11 @@ class l3_switch (EventMixin):
     self.listenTo(core.openflow)
     
     log.debug("Up...")
+  
+  def _handle_ConnectionUp (self, event):
+    log.info("Connection up %s deleting all flowmods\n" % event.dpid)
+    msg = of.ofp_flow_mod(command=of.OFPFC_DELETE)
+    core.openflow.sendToDPID(event.dpid,msg)
 
   def _handle_PacketIn (self, event):
     
@@ -216,11 +223,10 @@ class l3_switch (EventMixin):
     if isinstance(packet.next, ipv4):
       log.debug("%i %i IP %s => %s", dpid,inport,
                 packet.next.srcip,packet.next.dstip)
-      print "Packet at ",dpid,"from port",inport,"src",packet.next.srcip,"dst",packet.next.dstip
       if self.fw.isFirewall(dpid):
-        print "I'm the firewall yay",dpid
+        log.info("PacketIn at firewall")
         if not self.fw.acceptPacket(packet.next, inport):
-          print "I'm dropping the packet"
+          log.info("PacketIn dropped by firewall")
           actions = []
           match = of.ofp_match.from_packet(packet, inport)
           msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
@@ -231,23 +237,6 @@ class l3_switch (EventMixin):
             match=of.ofp_match.from_packet(packet,inport))
           event.connection.send(msg.pack())
           return
-    
-      fport= self.fw.routeToFirewall(dpid,inport)
-      if fport >= 0:
-        print "I'm forwarding to firewall on port", fport, "from", inport
-        newactions = []
-        newactions.append(of.ofp_action_output(port = fport))
-        newmsg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-          idle_timeout=FLOW_IDLE_TIMEOUT,
-          hard_timeout=of.OFP_FLOW_PERMANENT,
-          buffer_id=event.ofp.buffer_id,
-          actions=newactions,
-          match=of.ofp_match.from_packet(packet,inport))
-        event.connection.send(newmsg.pack())
-        return       
-      # Send any waiting packets...
-      self._send_lost_buffers(dpid, packet.next.srcip, packet.src, inport)
-
       # Learn or update port/MAC info
       if packet.next.srcip in self.arpTable[dpid]:
         if self.arpTable[dpid][packet.next.srcip] != (inport, packet.src):
@@ -325,7 +314,7 @@ class l3_switch (EventMixin):
         e = ethernet(type=ethernet.ARP_TYPE, src=packet.src,
                      dst=ETHER_BROADCAST)
         e.set_payload(r)
-        log.debug("%i %i ARPing for %s on behalf of %s" % (dpid, inport,
+        log.info("%i %i ARPing for %s on behalf of %s" % (dpid, inport,
          str(r.protodst), str(r.protosrc)))
         msg = of.ofp_packet_out()
         msg.data = e.pack()
@@ -335,7 +324,7 @@ class l3_switch (EventMixin):
 
     elif isinstance(packet.next, arp):
       a = packet.next
-      log.debug("%i %i ARP %s %s => %s", dpid, inport,
+      log.info("%i %i ARP %s %s => %s", dpid, inport,
        {arp.REQUEST:"request",arp.REPLY:"reply"}.get(a.opcode,
        'op:%i' % (a.opcode,)), str(a.protosrc), str(a.protodst))
 
@@ -348,7 +337,7 @@ class l3_switch (EventMixin):
               if self.arpTable[dpid][a.protosrc] != (inport, packet.src):
                 log.info("%i %i RE-learned %s", dpid,inport,str(a.protosrc))
             else:
-              log.debug("%i %i learned %s", dpid,inport,str(a.protosrc))
+              log.info("%i %i learned %s", dpid,inport,str(a.protosrc))
             self.arpTable[dpid][a.protosrc] = Entry(inport, packet.src)
 
             # Send any waiting packets...
@@ -376,7 +365,7 @@ class l3_switch (EventMixin):
                   e = ethernet(type=packet.type, src=dpid_to_mac(dpid),
                                dst=a.hwsrc)
                   e.set_payload(r)
-                  log.debug("%i %i answering ARP for %s" % (dpid, inport,
+                  log.info("%i %i answering ARP for %s" % (dpid, inport,
                    str(r.protosrc)))
                   msg = of.ofp_packet_out()
                   msg.data = e.pack()
@@ -387,7 +376,7 @@ class l3_switch (EventMixin):
                   return
 
       # Didn't know how to answer or otherwise handle this ARP, so just flood it
-      log.debug("%i %i flooding ARP %s %s => %s" % (dpid, inport,
+      log.info("%i %i flooding ARP %s %s => %s" % (dpid, inport,
        {arp.REQUEST:"request",arp.REPLY:"reply"}.get(a.opcode,
        'op:%i' % (a.opcode,)), str(a.protosrc), str(a.protodst)))
 

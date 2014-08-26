@@ -33,21 +33,26 @@ def simpleTest():
     #c0 = net.addController('c0',POXBridge)
     c0 = net.addController('c0',RemoteController)
     s1 = net.addSwitch('s1')
-    s2 = net.addSwitch('s2')
+    s2 = net.addSwitch('s2',dpid='0000000000000012')
     s3 = net.addSwitch('s3')
     s4 = net.addSwitch('s4')
     h1 = net.addHost('h1')
     h2 = net.addHost('h2')
     h3 =net.addHost('h3')
-    h4 = net.addHost('h4');
+    h4 = net.addHost('h4')
     l11= net.addLink(h1,s1)
     l22= net.addLink(h2,s2)
     l33= net.addLink(h3,s3)
     l44= net.addLink(h4,s4)
+
     l12= net.addLink(s1,s2)
     l23= net.addLink(s2,s3)
     l2f= net.addLink(s2,s4)
     net.start()
+    h1.intfList()[0].setIP('10.43.21.1/24')
+    h2.intfList()[0].setIP('10.43.21.2/24')
+    h3.intfList()[0].setIP('10.43.21.3/24')
+    h4.intfList()[0].setIP('10.43.21.4/24')
     print "Dumping host connections"
     dumpNodeConnections(net.hosts)
     print "Testing network connectivity"
